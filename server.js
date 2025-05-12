@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const Joi = require('joi');
 const { MongoClient } = require('mongodb');
 const path = require('path');
+const { ObjectId } = require('mongodb');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -40,6 +41,24 @@ async function start() {
       cookie: { maxAge: 3600000 } // 1 hour
     }));
 
+    // Authorization middleware
+    const requireAuth = (req, res, next) => {
+      if (!req.session.user) {
+        return res.redirect('/login');
+      }
+      next();
+    };
+
+    const requireAdmin = (req, res, next) => {
+      if (!req.session.user || req.session.user.user_type !== 'admin') {
+        return res.status(403).render('error', { 
+          message: 'You are not authorized to access this page.',
+          user: req.session.user 
+        });
+      }
+      next();
+    };
+
     // Routes
     app.get('/', (req, res) => {
       res.render('index', { user: req.session.user });
@@ -72,8 +91,13 @@ async function start() {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        await userCollection.insertOne({ name, email, password: hashedPassword });
-        req.session.user = { name };
+        await userCollection.insertOne({ 
+          name, 
+          email, 
+          password: hashedPassword,
+          user_type: 'user' // Default user type
+        });
+        req.session.user = { name, user_type: 'user' };
         res.redirect('/members');
       } catch (error) {
         console.error('Signup error:', error);
@@ -106,7 +130,7 @@ async function start() {
           return res.render('login', { error: 'Invalid email or password. Please try again.' });
         }
 
-        req.session.user = { name: user.name };
+        req.session.user = { name: user.name, user_type: user.user_type };
         res.redirect('/members');
       } catch (error) {
         console.error('Login error:', error);
@@ -118,15 +142,61 @@ async function start() {
       if (!req.session.user) {
         return res.redirect('/');
       }
-      const images = ['/public/image1.jpg', '/public/image2.jpg', '/public/image3.jpg'];
-      const image = images[Math.floor(Math.random() * images.length)];
-      res.render('members', { user: req.session.user, image });
+      res.render('members', { user: req.session.user });
     });
 
     app.get('/logout', (req, res) => {
       req.session.destroy(() => {
         res.redirect('/');
       });
+    });
+
+    // Admin routes
+    app.get('/admin', requireAuth, requireAdmin, async (req, res) => {
+      try {
+        const users = await userCollection.find({}).toArray();
+        res.render('admin', { users, user: req.session.user });
+      } catch (error) {
+        console.error('Admin page error:', error);
+        res.status(500).render('error', { 
+          message: 'An error occurred while loading the admin page.',
+          user: req.session.user 
+        });
+      }
+    });
+
+    app.post('/admin/promote/:userId', requireAuth, requireAdmin, async (req, res) => {
+      try {
+        const { userId } = req.params;
+        await userCollection.updateOne(
+          { _id: new ObjectId(userId) },
+          { $set: { user_type: 'admin' } }
+        );
+        res.redirect('/admin');
+      } catch (error) {
+        console.error('Promote user error:', error);
+        res.status(500).render('error', { 
+          message: 'An error occurred while promoting the user.',
+          user: req.session.user 
+        });
+      }
+    });
+
+    app.post('/admin/demote/:userId', requireAuth, requireAdmin, async (req, res) => {
+      try {
+        const { userId } = req.params;
+        await userCollection.updateOne(
+          { _id: new ObjectId(userId) },
+          { $set: { user_type: 'user' } }
+        );
+        res.redirect('/admin');
+      } catch (error) {
+        console.error('Demote user error:', error);
+        res.status(500).render('error', { 
+          message: 'An error occurred while demoting the user.',
+          user: req.session.user 
+        });
+      }
     });
 
     app.use((req, res) => {
